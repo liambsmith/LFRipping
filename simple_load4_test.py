@@ -1,5 +1,4 @@
 import serial
-import time
 import subprocess
 
 # Configuration
@@ -13,7 +12,6 @@ DEFAULT_OFFSET = 2304  # Default offset with 0 discs in the bin
 DRIVE_NAMES = ["sr3", "sr2", "sr0", "sr1"]  # Linux device names for drives (top to bottom)
 
 
-# Helper Functions
 def send_command(serial_conn, command):
     """Send a command to the autoloader, handle errors, and retry if needed."""
     recalibration_needed = False  # Flag to indicate if recalibration is required
@@ -42,7 +40,7 @@ def send_command(serial_conn, command):
                 # Ready state
                 if recalibration_needed:
                     print("Ready state detected. Recalibrating...")
-                    setup_autoloader(serial_conn)
+                    setup_bays(serial_conn)
                     recalibration_needed = False
                 return response  # Return the original command response
             elif status_response == "+!e1005000C":
@@ -61,7 +59,8 @@ def send_command(serial_conn, command):
                 print(f"Unexpected status after '{command}': {status_response}")
                 return response
 
-def setup_autoloader(serial_conn):
+
+def setup_bays(serial_conn):
     """Set up bays by probing all bins and tracking disc state."""
     print("Performing initial status check...")
     send_command(serial_conn, "!e1C")  # Clear any pending status
@@ -73,7 +72,7 @@ def setup_autoloader(serial_conn):
         # Attempt to grab a disc from the bin
         grab_command = f"!f120{bin_num}2C"
         response = send_command(serial_conn, grab_command)
-        
+
         if "+!f11C" in response:
             disc_held = True
             print(f"Disc successfully picked up from Bin {bin_num + 1}.")
@@ -90,10 +89,13 @@ def setup_autoloader(serial_conn):
 
     print("Bays setup completed.")
 
+
 def calculate_disc_count(response):
     """Calculate the number of discs in a bin based on the response."""
     if response.startswith("+!f01036000C"):
         return 0  # Empty bin
+    if response.startswith("+!f01365534C"):
+        return 'Error code in bin count'
     try:
         # Extract the offset value from the response
         offset = int(response[6:10])  # Extract the XXXX portion
@@ -104,30 +106,27 @@ def calculate_disc_count(response):
         return "unknown"
 
 
-def query_bin_inventory(serial_conn):
+def query_bin_inventory(serial_conn, bin_num):
     """Query the number of discs in each bin."""
     inventory = {}
-    for bin_num in range(4):
-        command = f"!f020{bin_num}C"
-        response = send_command(serial_conn, command)
+    command = f"!f020{bin_num}C"
+    response = send_command(serial_conn, command)
 
-        if "Error" in response:
-            inventory[bin_num + 1] = "error"
-        else:
-            inventory[bin_num + 1] = calculate_disc_count(response)
+    if "Error" in response:
+        inventory = "error"
+    else:
+        inventory = calculate_disc_count(response)
 
     print(f"Bin inventory: {inventory}")
     return inventory
 
+
 def load_disc_to_drive(serial_conn, drive_number):
     """Load a disc from the first available input bin into the specified drive."""
-    # Check bin inventory
-    inventory = query_bin_inventory(serial_conn)
-    input_bin = None
 
     # Find the first input bin with discs
     for bin_num in INPUT_BINS:
-        if inventory.get(bin_num, 0) > 0:
+        if query_bin_inventory(serial_conn, bin_num) > 0:
             input_bin = bin_num
             break
 
@@ -167,6 +166,7 @@ def load_disc_to_drive(serial_conn, drive_number):
 
     print(f"Disc successfully placed in Drive {drive_number}.")
 
+
 def open_drive(drive_name):
     """Open the drive tray using the Linux device name."""
     try:
@@ -174,6 +174,7 @@ def open_drive(drive_name):
         print(f"Drive {drive_name} opened successfully.")
     except subprocess.CalledProcessError:
         print(f"Failed to open drive {drive_name}.")
+
 
 def close_drive(drive_name):
     """Close the drive tray using the Linux device name."""
@@ -189,7 +190,7 @@ def test_autoloader():
     """Test autoloader functionality by loading discs into all trays."""
     with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1) as serial_conn:
         print("Starting setup process...")
-        setup_autoloader(serial_conn)
+        setup_bays(serial_conn)
 
         print("Loading discs into all drives from top to bottom...")
         # Load discs sequentially from top to bottom
