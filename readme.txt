@@ -5,6 +5,12 @@ How to copy disks:
  Make sure cmdsend.pl uses ttyUSB0 or what it is if it's something else
 
 2. Run startup # TODO automatic
+
+
+To send specific commands with perl:
+sudo perl cmdsend.pl '<COMMAND>'
+
+Startup stuff:
 sudo perl cmdsend.pl '!e1C'
 
 To set up bays/find how many are in, need to grab then put for each one.
