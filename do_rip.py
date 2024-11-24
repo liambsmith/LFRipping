@@ -1,5 +1,13 @@
 import serial
+import os
+import shutil
 import subprocess
+from multiprocessing import Process
+from multiprocessing import Lock
+import time
+
+# Global lock to ensure only one load/unload operation runs at a time
+operation_lock = Lock()
 
 # Configuration
 SERIAL_PORT = "/dev/ttyUSB0"  # Serial port for autoloader communication
@@ -42,6 +50,7 @@ def send_command(serial_conn, command):
                     # setup_bays(serial_conn)
                     # TODO maybe do something else here, for now skip we only need to calibrate when we call the function
                     recalibration_needed = False
+                    break # retry it all now that the error was cleared
                 return response  # Return the original command response
             elif status_response == "+!e1005000C":
                 # Bay door issue (first occurrence logs an error)
@@ -126,10 +135,8 @@ def query_bin_inventory(serial_conn, bin_num):
         print(f"Unexpected response format for Bin {bin_num}: {response}")
         return "unknown"
 
-
 def load_disc_to_drive(serial_conn, drive_number):
     """Load a disc from the first available input bin into the specified drive."""
-
     input_bin = None
     # Find the first input bin with discs
     for bin_num in INPUT_BINS:
@@ -139,14 +146,14 @@ def load_disc_to_drive(serial_conn, drive_number):
 
     if not input_bin:
         print("No discs available in input bins.")
-        return
+        return False  # No disc loaded
 
     print(f"Picking a disc from Bin {input_bin}...")
     grab_command = f"!f120{input_bin-1}2C"  # Grab disc from the input bin
     response = send_command(serial_conn, grab_command)
     if "+!f10C" in response:
         print(f"No disc available in Bin {input_bin}.")
-        return
+        return False  # No disc loaded
     elif "+!f11C" in response:
         print(f"Disc picked up from Bin {input_bin}.")
 
@@ -172,6 +179,7 @@ def load_disc_to_drive(serial_conn, drive_number):
     close_drive(drive_name)
 
     print(f"Disc successfully placed in Drive {drive_number}.")
+    return True  # Disc loaded successfully
 
 def unload_disc_to_bin(serial_conn, drive_number):
     """Unload a disc from a drive and move it to the first non-full output bin."""
@@ -185,7 +193,7 @@ def unload_disc_to_bin(serial_conn, drive_number):
 
     if target_bin is None:
         print("All output bins are full. Cannot unload disc.")
-        return
+        return False  # No disc unloaded
 
     print(f"Unloading disc from Drive {drive_number}...")
     # Move autoloader to the drive
@@ -214,7 +222,7 @@ def unload_disc_to_bin(serial_conn, drive_number):
     send_command(serial_conn, move_to_bin_command)
 
     print(f"Disc successfully placed in Output Bin {target_bin}.")
-
+    return True  # Disc unloaded successfully
 
 def open_drive(drive_name):
     """Open the drive tray using the Linux device name."""
@@ -232,9 +240,8 @@ def close_drive(drive_name):
     except subprocess.CalledProcessError:
         print(f"Failed to close drive {drive_name}.")
 
-
 # Main Test Script
-def test_autoloader():
+def test_autoloader_in_out_4():
     """Test autoloader functionality by loading and then unloading discs."""
     with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1) as serial_conn:
         # print("Starting setup process...")
@@ -258,8 +265,141 @@ def test_autoloader():
 
         print("All drives unloaded successfully.")
 
+def detect_hard_drive_path():
+    """Automatically detect the external hard drive path under /media/lf/."""
+    base_path = "/media/lf/"
+    if not os.path.exists(base_path):
+        raise FileNotFoundError(f"Base path {base_path} does not exist. Ensure the drive is mounted.")
 
+    # Find the first directory under /media/lf/
+    for item in os.listdir(base_path):
+        full_path = os.path.join(base_path, item)
+        if os.path.isdir(full_path):
+            print(f"Detected external hard drive: {full_path}")
+            return full_path
+
+    raise FileNotFoundError("No external hard drives detected under /media/lf/")
+
+def generate_unique_folder_path(base_path, folder_name):
+    """Generate a unique folder path in the RIPPING subfolder, appending (2), (3), etc., if necessary."""
+    ripping_path = os.path.join(base_path, "RIPPING")
+    os.makedirs(ripping_path, exist_ok=True)  # Create the RIPPING directory if it doesn't exist
+    os.chmod(ripping_path, 0o777)  # Set universal permissions
+
+    folder_path = os.path.join(ripping_path, folder_name)
+    counter = 1
+    while os.path.exists(folder_path):
+        folder_path = os.path.join(ripping_path, f"{folder_name} ({counter})")
+        counter += 1
+    return folder_path
+
+def read_dvd(drive_number, destination_path):
+    """Read data from a DVD in the specified drive and copy it to the destination."""
+    drive_name = DRIVE_NAMES[drive_number - 1]
+    mount_point = f"/mnt/{drive_name}"
+    os.makedirs(mount_point, exist_ok=True)
+    os.chmod(mount_point, 0o777)  # Set universal permissions for the mount point
+
+    try:
+        # Wait for a DVD to be inserted
+        print(f"Waiting for a DVD to be inserted into Drive {drive_name}...")
+        for attempt in range(50):  # Retry up to 50 times with 0.5s delay
+            result = subprocess.run(["blkid", f"/dev/{drive_name}"], capture_output=True, text=True)
+            if result.returncode == 0:  # blkid returns 0 if the drive has media
+                print(f"DVD detected in Drive {drive_name}. Proceeding with mount.")
+                break
+            time.sleep(0.5)
+        else:
+            raise TimeoutError(f"No DVD detected in Drive {drive_name} after multiple attempts.")
+
+        # Mount the DVD
+        subprocess.run(["mount", f"/dev/{drive_name}", mount_point], check=True)
+        print(f"Mounted {drive_name} at {mount_point}")
+
+        # Get the disc name
+        disc_name = subprocess.run(["blkid", "-o", "value", "-s", "LABEL", f"/dev/{drive_name}"],
+                                   capture_output=True, text=True).stdout.strip() or f"DVD_{drive_number}"
+
+        # Create a unique folder for the DVD in the RIPPING directory
+        folder_path = generate_unique_folder_path(destination_path, disc_name)
+        os.makedirs(folder_path)
+        os.chmod(folder_path, 0o777)  # Set universal permissions
+
+        # Copy data from DVD to the folder
+        errors = []
+        for root, _, files in os.walk(mount_point):
+            for file in files[:1]:
+                src = os.path.join(root, file)
+                dest = os.path.join(folder_path, os.path.relpath(src, mount_point))
+                try:
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    os.chmod(os.path.dirname(dest), 0o777)  # Set permissions for intermediate directories
+                    shutil.copy2(src, dest)
+                    os.chmod(dest, 0o777)  # Set permissions for copied files
+                except Exception as e:
+                    errors.append(f"Failed to copy {src}: {e}")
+
+        # Write errors to a log file
+        if errors:
+            log_path = os.path.join(folder_path, "errors.log")
+            with open(log_path, "w") as log_file:
+                log_file.write("\n".join(errors))
+            os.chmod(log_path, 0o777)  # Set permissions for the log file
+            print(f"Errors logged to {log_path}")
+
+        print(f"DVD {disc_name} successfully read to {folder_path}")
+
+    except Exception as e:
+        print(f"Error processing DVD in Drive {drive_number}: {e}")
+    finally:
+        # Unmount the drive
+        subprocess.run(["umount", mount_point], check=True)
+        os.rmdir(mount_point)
+        print(f"Unmounted {drive_name} and removed {mount_point}")
+
+def process_drive(serial_conn, drive_number, destination_path, lock):
+    """Process a single drive: read data and handle autoloader."""
+    while True:
+        try:
+            # Acquire lock before interacting with the autoloader
+            with lock:
+                # Load a disc into the drive
+                if not load_disc_to_drive(serial_conn, drive_number):
+                    print(f"Stopping processing for Drive {drive_number}: No discs left in input bins.")
+                    break
+
+            # Read data from the drive
+            read_dvd(drive_number, destination_path)
+
+            # Acquire lock before interacting with the autoloader
+            with lock:
+                # Unload the disc and move it to an output bin
+                if not unload_disc_to_bin(serial_conn, drive_number):
+                    print(f"Stopping processing for Drive {drive_number}: Output bins are full.")
+                    break
+        except Exception as e:
+            print(f"Error in drive {drive_number} processing: {e}")
+            break
+
+
+
+def main():
+    """Main function to orchestrate the DVD processing."""
+    destination_path = detect_hard_drive_path()
+    print(f"Using {destination_path} as the destination for DVD contents.")
+
+    with serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1) as serial_conn:
+        processes = []
+        for drive_number in range(1, 5):  # Drives 1 through 4
+            process = Process(target=process_drive, args=(serial_conn, drive_number, destination_path, operation_lock))
+            processes.append(process)
+            process.start()
+
+        for process in processes:
+            process.join()
+
+    print("All discs processed successfully.")
 
 if __name__ == "__main__":
-    test_autoloader()
+    main()
 
