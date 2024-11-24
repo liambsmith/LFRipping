@@ -328,7 +328,7 @@ def read_dvd(drive_number, destination_path):
         # Copy data from DVD to the folder
         errors = []
         for root, _, files in os.walk(mount_point):
-            for file in files[:1]:
+            for file in files:
                 src = os.path.join(root, file)
                 dest = os.path.join(folder_path, os.path.relpath(src, mount_point))
                 try:
