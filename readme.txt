@@ -1,10 +1,33 @@
 How to copy disks:
 
+First time setup:
+
 1. Terminal: dmesg | grep tty
  Find what cp201x is attached to (probably ttyUSB0)
  Make sure cmdsend.pl uses ttyUSB0 or what it is if it's something else
 
-2. Run startup # TODO automatic
+---
+
+After restarting computer:
+
+1. cd to LFRipping folder
+
+2. 'conda activate ripping'
+
+---
+
+To copy disks:
+
+1. Plug in hard drive if there is none, replace if full with a fresh one.
+
+2. Load all DVDs into bays 1 and 2 (max 108 in each bay).
+
+3. 'sudo $(which python) do_rip.py'
+    Password is standard LF password
+
+4. Code will close after all disks have been copied. Unload bays 3 and 4 and go back to step 1.
+
+---
 
 
 To send specific commands with perl:
