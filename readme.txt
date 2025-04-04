@@ -22,7 +22,8 @@ To copy disks:
 
 2. Load all DVDs into bays 1 and 2 (max 108 in each bay).
 
-3. 'sudo $(which python) do_rip.py'
+3.  Make sure bay door is closed, then run:
+    'sudo $(which python) do_rip.py'
     Password is standard LF password
 
 4. Code will close after all disks have been copied. Unload bays 3 and 4 and go back to step 1.
